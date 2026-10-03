@@ -16,10 +16,14 @@ UA = "Mozilla/5.0 (compatible; Fratelli-B2B-Credit/6.0; +public-web-research)"
 DIRECT_SOURCES = [
     ("CNPJ.BIZ", "https://cnpj.biz/{cnpj}"),
     ("CNPJ.ai", "https://cnpj.ai/{cnpj}"),
+    ("Casa dos Dados", "https://casadosdados.com.br/solucao/cnpj/{cnpj}"),
+    ("Econodata", "https://www.econodata.com.br/consulta-empresa/{cnpj}"),
 ]
 SEARCH_TARGETS = [
     ("Google — CNPJ", "https://www.google.com/search?q={q}"),
     ("DuckDuckGo — CNPJ", "https://html.duckduckgo.com/html/?q={q}"),
+    ("Google — Casa dos Dados", "https://www.google.com/search?q=site%3Acasadosdados.com.br%2Fsolucao%2Fcnpj+{q}"),
+    ("Google — Econodata", "https://www.google.com/search?q=site%3Aeconodata.com.br%2Fconsulta-empresa+{q}"),
     ("Google — processos", "https://www.google.com/search?q={q}+processos"),
     ("Google — notícias", "https://www.google.com/search?q={q}+notícias"),
 ]
@@ -220,13 +224,18 @@ def research_company(cnpj: str) -> Dict[str, Any]:
         result["sources"].append(row)
     # Search pages are treated as discovery evidence, not as authoritative records.
     queries = [c, f'"{c}" empresa']
+    # Discovery sources are useful when a direct page is unavailable. They never
+    # outrank a direct cadastral source, but their snippets can corroborate fields.
     for q in queries:
-        for name, template in SEARCH_TARGETS[:2]:
+        for name, template in SEARCH_TARGETS:
             row = fetch(template.format(q=quote(q)))
             row.update({"source":name,"kind":"search"})
             if row.get("ok"):
-                snippet = " ".join(row.get("text","").split())[:5000]
-                result["search_leads"].append({"source":name,"query":q,"url":row.get("url"),"snippet":snippet})
+                snippet = " ".join(row.get("text","").split())[:7000]
+                discovered = parse_public_page(snippet)
+                result["search_leads"].append({"source":name,"query":q,"url":row.get("url"),"snippet":snippet,"fields":discovered})
+                for k,v in discovered.items():
+                    all_fields.setdefault(k,[]).append((name,v))
                 for u in row.get("links", []):
                     host = urlparse(u).netloc.lower()
                     if host and not any(x in host for x in ("google.", "duckduckgo.", "bing.", "yahoo.", "jusbrasil.", "cnpj.biz", "cnpj.ai")):

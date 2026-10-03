@@ -248,6 +248,12 @@ if menu=="Nova análise":
     years=st.number_input("Anos de atividade confirmados", min_value=0.0,step=1.0)
     status=st.selectbox("Situação cadastral confirmada", ["Não informado","ATIVA/REGULAR","SUSPENSA/INAPTA","BAIXADA/OUTRA"])
     docs=st.checkbox("Dados cadastrais/documentação conferidos", value=False)
+    st.markdown("**Histórico comercial interno (opcional)**")
+    ph1, ph2 = st.columns(2)
+    with ph1:
+        payment_history=st.selectbox("Histórico de pagamentos", ["Não informado","Em dia","Atrasos","Negativo/Inadimplente"], key="payment_history")
+    with ph2:
+        overdue=float(st.number_input("Valor vencido informado (R$)", min_value=0.0, step=500.0, key="overdue_amount"))
 
     st.subheader("Composição do score")
     st.caption("O score 6.2.1 é calculado a partir das evidências efetivamente encontradas. Critérios sem evidência recebem no máximo 25% do peso e não são renormalizados.")
@@ -262,6 +268,8 @@ if menu=="Nova análise":
         confirmed_years=years,
         confirmed_status=status,
         documents_checked=docs,
+        payment_history=payment_history,
+        overdue_amount=overdue,
     )
     criteria = analysis["criteria"]
     score = analysis["score"]
@@ -272,6 +280,12 @@ if menu=="Nova análise":
     dec = analysis["decision"]
     items = {x["name"]: round(x["points"] / x["max_points"] * 100, 1) if x["max_points"] else None for x in criteria}
     missing = analysis["missing"]
+    diagnostics = analysis.get("diagnostics", {})
+
+    dq = analysis.get("data_quality", "INSUFICIENTE")
+    st.info(f"**Qualidade dos dados:** {dq} · **Fontes diretas com resposta:** {diagnostics.get('direct_sources_success', 0)} · **Fontes de pesquisa com resposta:** {diagnostics.get('search_sources_success', 0)} · **Campos encontrados:** {diagnostics.get('fields_found', 0)} · **Divergências:** {diagnostics.get('conflicts', 0)}")
+    if diagnostics.get("research_status") == "SEM RESPOSTA":
+        st.error("A pesquisa pública não retornou evidências úteis. Neste cenário o score baixo não significa que a empresa seja ruim; significa que a base factual está insuficiente. Verifique a conectividade do Streamlit e as fontes antes de tomar uma decisão.")
 
     st.dataframe(
         pd.DataFrame([
@@ -445,6 +459,18 @@ if menu=="Nova análise":
                 st.error(f"Pedido calculado: {money(order['net'])}. Não há crédito efetivamente liberado.")
             else:
                 st.warning(f"Pedido calculado: {money(order['net'])}. Excesso: {money(excess)}.")
+
+    st.subheader("Diagnóstico da pesquisa")
+    if d:
+        st.write(f"**{diagnostics.get('direct_sources_success',0)}** fontes diretas responderam e **{diagnostics.get('search_sources_success',0)}** fontes de descoberta responderam.")
+        if diagnostics.get("conflicts",0):
+            st.warning(f"Foram encontradas {diagnostics.get('conflicts')} divergências. Elas não são escondidas nem resolvidas silenciosamente.")
+        with st.expander("Ver fontes sem resposta", expanded=False):
+            failed=[x for x in d.get('sources',[]) if not x.get('ok')]
+            if failed:
+                st.dataframe(pd.DataFrame([{"Fonte":x.get('source'),"HTTP":x.get('status'),"URL":x.get('url'),"Erro":x.get('error','')} for x in failed]),use_container_width=True,hide_index=True)
+            else:
+                st.success("Nenhuma fonte consultada retornou erro.")
 
     st.subheader("Fontes consultadas")
     if d:

@@ -345,12 +345,16 @@ def build_dynamic_credit_analysis(
     confirmed_years: float = 0.0,
     confirmed_status: str = "Não informado",
     documents_checked: bool = False,
+    payment_history: str = "Não informado",
+    overdue_amount: float = 0.0,
 ) -> Dict[str, Any]:
-    """Build the credit analysis from evidence actually available.
+    """Evidence-driven B2B credit analysis.
 
-    The public dossier changes the criteria; no fixed customer score is used.
-    Missing criteria receive at most 25% of their weight. Absence of evidence is
-    never interpreted as evidence of a clean history.
+    Important design rule: missing information is not converted into a clean
+    record. A missing criterion receives at most 25% of its weight. Positive
+    points require an actual documented indicator. Financial capacity uses the
+    request/revenue/exposure relationships only when the underlying numbers are
+    supplied by the analyst and their source is identified.
     """
     d = dossier or {}
     fields = d.get("fields", {}) or {}
@@ -358,20 +362,21 @@ def build_dynamic_credit_analysis(
     conflicts = d.get("conflicts", []) or []
     successful = int(d.get("successful_sources", 0) or 0)
     source_count = int(d.get("source_count", len(sources)) or 0)
+    direct_success = sum(1 for x in sources if x.get("ok") and x.get("kind") == "direct")
+    search_success = sum(1 for x in sources if x.get("ok") and x.get("kind") == "search")
 
     def norm(v):
         return str(v or "").strip().upper()
 
     status_pub = norm(fields.get("Situação cadastral"))
-    active = "ATIV" in status_pub
     status_input = norm(confirmed_status)
+    status_known = bool(status_pub) or status_input not in ("", "NÃO INFORMADO")
+    active = "ATIV" in status_pub
     if status_input == "ATIVA/REGULAR":
         active = True
     elif status_input in ("SUSPENSA/INAPTA", "BAIXADA/OUTRA"):
         active = False
 
-    # Prefer the cadastral opening date when available; otherwise use the
-    # explicitly confirmed value supplied by the analyst.
     age = float(confirmed_years or 0)
     opening = fields.get("Data de abertura") or fields.get("Abertura")
     if opening:
@@ -383,141 +388,195 @@ def build_dynamic_credit_analysis(
             except Exception:
                 pass
 
-    criteria = []
-    positives, attention, alerts = [], [], []
+    criteria, positives, attention, alerts = [], [], [], []
 
-    # 1) Cadastro e estabilidade — driven by actual status and age.
-    if status_pub or status_input not in ("", "NÃO INFORMADO"):
+    # 1. Cadastro e estabilidade (15): status is decisive; age differentiates
+    # otherwise similar active companies.
+    if status_known:
         if active:
-            cad_points = 15.0
-            if age < 1: cad_points = 9.0
-            elif age < 2: cad_points = 11.0
-            elif age < 5: cad_points = 13.0
-            criteria.append(criterion(
-                "Cadastro e estabilidade", 15, f"Situação: {fields.get('Situação cadastral') or confirmed_status}; idade: {age:.1f} anos",
+            if age >= 10: cad_points = 15.0
+            elif age >= 5: cad_points = 14.0
+            elif age >= 2: cad_points = 12.5
+            elif age >= 1: cad_points = 10.5
+            else: cad_points = 8.0
+            criteria.append(criterion("Cadastro e estabilidade", 15,
+                f"Situação: {fields.get('Situação cadastral') or confirmed_status}; idade: {age:.1f} anos",
                 positive=cad_points,
-                explanation="Pontuação varia conforme situação cadastral e tempo de atividade identificado."
-            ))
-            positives.append("Cadastro identificado como ativo/regular na evidência disponível.")
+                explanation="Situação cadastral e idade real da empresa alteram o resultado; não é uma pontuação fixa."))
+            positives.append(f"Cadastro ativo/regular identificado; idade estimada de {age:.1f} anos.")
         else:
-            criteria.append(criterion(
-                "Cadastro e estabilidade", 15, f"Situação identificada: {fields.get('Situação cadastral') or confirmed_status}",
+            criteria.append(criterion("Cadastro e estabilidade", 15,
+                f"Situação identificada: {fields.get('Situação cadastral') or confirmed_status}",
                 positive=0, negative=15,
-                explanation="Situação cadastral não ativa reduz integralmente este critério."
-            ))
+                explanation="Situação cadastral não ativa reduz integralmente este critério."))
             alerts.append(f"Situação cadastral requer atenção: {fields.get('Situação cadastral') or confirmed_status}.")
     else:
         criteria.append(criterion("Cadastro e estabilidade", 15, "sem situação cadastral verificável", missing=True,
-                                  explanation="Sem evidência suficiente: critério limitado a 25% do peso."))
+                                  explanation="Sem evidência: máximo de 25% do peso."))
 
-    # 2) Structure — proportional to independently documented fields.
-    structure_keys = ["Razão social","Nome fantasia","Natureza jurídica","Capital social",
-                      "Porte","CNAE principal","Município","UF","Endereço"]
+    # 2. Structure (15): count only fields actually found, with an independent
+    # source bonus capped at the criterion maximum.
+    structure_keys = ["Razão social", "Nome fantasia", "Natureza jurídica", "Capital social",
+                      "Porte", "CNAE principal", "Município/UF", "Endereço", "CEP"]
     found_struct = sum(bool(fields.get(k)) for k in structure_keys)
     if found_struct:
         struct_points = 15.0 * found_struct / len(structure_keys)
+        if direct_success >= 2 and not conflicts:
+            struct_points += 1.5
+        elif direct_success >= 2:
+            struct_points += 0.5
         if documents_checked:
-            struct_points = min(15.0, struct_points + 1.0)
-        criteria.append(criterion(
-            "Estrutura empresarial", 15, f"{found_struct}/{len(structure_keys)} campos estruturais identificados",
+            struct_points += 1.0
+        struct_points = min(15.0, struct_points)
+        criteria.append(criterion("Estrutura empresarial", 15,
+            f"{found_struct}/{len(structure_keys)} campos estruturais; {direct_success} fonte(s) direta(s) com resposta",
             positive=struct_points,
-            explanation="Pontuação proporcional à documentação estrutural encontrada; conferência documental pode completar a evidência."
-        ))
+            explanation="A pontuação depende da quantidade de dados identificados e da independência das fontes."))
     else:
         criteria.append(criterion("Estrutura empresarial", 15, "nenhum campo estrutural verificável", missing=True,
-                                  explanation="Sem evidência suficiente: critério limitado a 25% do peso."))
+                                  explanation="Sem evidência: máximo de 25% do peso."))
         attention.append("Estrutura cadastral insuficientemente documentada.")
 
-    # 3) Public history — only documented positive/negative signals.
-    if sources or fields:
+    # 3. Public history (20): only documented positive/negative signals. Source
+    # count alone never becomes proof of good conduct.
+    history_evidence = bool(fields) or direct_success > 0 or search_success > 0 or bool(conflicts)
+    if history_evidence:
         hist = 0.0
-        if active: hist += 8.0
-        if age >= 5: hist += 5.0
-        elif age >= 2: hist += 3.0
-        elif age >= 1: hist += 1.5
-        # Convergence among independent direct sources is evidence quality, not
-        # proof of payment capacity.
-        direct_ok = sum(1 for s in sources if s.get("ok") and s.get("kind") == "direct")
-        hist += min(5.0, direct_ok * 2.5)
+        if active: hist += 7.0
+        if age >= 10: hist += 4.0
+        elif age >= 5: hist += 3.0
+        elif age >= 2: hist += 2.0
+        elif age >= 1: hist += 1.0
+        # Public footprint/research completeness, capped. This is evidence of
+        # traceability, not evidence of payment ability.
+        hist += min(4.0, direct_success * 1.5 + min(search_success, 2) * 0.5)
         if critical_restriction:
             hist -= 20.0
-            alerts.append("Restrição crítica confirmada pelo analista/fonte documental.")
+            alerts.append("Restrição crítica confirmada em fonte/documento informado pelo analista.")
         if conflicts:
+            hist -= min(4.0, len(conflicts) * 0.75)
             attention.append(f"{len(conflicts)} divergência(s) entre fontes públicas.")
-        criteria.append(criterion(
-            "Histórico público", 20, f"{direct_ok} fonte(s) cadastral(is) direta(s) com resposta; {len(conflicts)} divergência(s)",
+        criteria.append(criterion("Histórico público", 20,
+            f"{direct_success} fonte(s) direta(s), {search_success} descoberta(s), {len(conflicts)} divergência(s)",
             positive=max(0.0, hist),
-            explanation="Usa apenas eventos/evidências documentados; ausência de processos, dívidas ou notícias não é inferida."
-        ))
+            explanation="A existência de fontes não é tratada como histórico positivo; somente indicadores documentados entram no cálculo."))
     else:
-        criteria.append(criterion("Histórico público", 20, "sem evidência pública recuperada", missing=True,
-                                  explanation="Sem evidência suficiente: critério limitado a 25% do peso."))
+        criteria.append(criterion("Histórico público", 20, "nenhuma evidência pública recuperada", missing=True,
+                                  explanation="Sem evidência: máximo de 25% do peso."))
 
-    # 4) Capacity — no invented revenue; uses verified internal/public indicators.
-    cap_parts = 0
-    if fields.get("CNAE principal"): cap_parts += 1
-    if fields.get("Porte"): cap_parts += 1
-    if fields.get("Capital social"): cap_parts += 1
-    if monthly_revenue > 0 and revenue_source in ("Documento financeiro","Fonte financeira autorizada"):
-        cap_parts += 2
-    elif monthly_revenue > 0 and revenue_source == "Declaração do cliente":
-        cap_parts += 1
-        attention.append("Faturamento informado pelo cliente não foi tratado como equivalente a documento financeiro.")
-    cap_points = min(20.0, cap_parts / 5 * 20)
-    if cap_parts:
-        criteria.append(criterion(
-            "Capacidade empresarial", 20, f"{cap_parts}/5 indicadores de capacidade documentados",
-            positive=cap_points,
-            explanation="Não estima faturamento. Usa somente indicadores públicos e dados internos informados/documentados."
-        ))
+    # 4. Capacity (20): differentiates companies using real financial inputs.
+    cap_points = 0.0
+    cap_notes = []
+    if fields.get("Porte"): cap_points += 3.0; cap_notes.append("porte")
+    if fields.get("CNAE principal"): cap_points += 2.0; cap_notes.append("CNAE")
+    if fields.get("Capital social"): cap_points += 2.0; cap_notes.append("capital")
+    if monthly_revenue > 0:
+        if revenue_source in ("Documento financeiro", "Fonte financeira autorizada"):
+            cap_points += 5.0; cap_notes.append("faturamento comprovado")
+            if requested > 0:
+                req_ratio = requested / monthly_revenue
+                if req_ratio <= 0.10: cap_points += 5.0
+                elif req_ratio <= 0.20: cap_points += 3.5
+                elif req_ratio <= 0.35: cap_points += 2.0
+                else: cap_points += 0.5
+                cap_notes.append(f"pedido/faturamento={req_ratio:.0%}")
+        elif revenue_source == "Declaração do cliente":
+            cap_points += 2.0; cap_notes.append("faturamento declarado")
+            attention.append("Faturamento declarado pelo cliente tem peso reduzido por não estar documentalmente comprovado.")
+    if exposure > 0 and monthly_revenue > 0:
+        exp_ratio = exposure / monthly_revenue
+        if exp_ratio <= 0.10: cap_points += 3.0
+        elif exp_ratio <= 0.25: cap_points += 2.0
+        elif exp_ratio <= 0.50: cap_points += 1.0
+        else:
+            cap_points -= 1.0
+            attention.append(f"Exposição atual representa {exp_ratio:.0%} do faturamento mensal informado.")
+        cap_notes.append(f"exposição/faturamento={exp_ratio:.0%}")
+    if overdue_amount > 0:
+        cap_points -= min(5.0, overdue_amount / max(monthly_revenue, 1.0) * 5.0) if monthly_revenue else 3.0
+        alerts.append(f"Há valor vencido informado de {overdue_amount:.2f}.")
+    cap_points = max(0.0, min(20.0, cap_points))
+    if cap_notes:
+        criteria.append(criterion("Capacidade empresarial", 20, "; ".join(cap_notes), positive=cap_points,
+            explanation="Relaciona capacidade documentada, pedido e exposição quando os valores foram informados."))
     else:
-        criteria.append(criterion("Capacidade empresarial", 20, "sem indicadores de capacidade verificáveis", missing=True,
-                                  explanation="Sem evidência suficiente: critério limitado a 25% do peso."))
+        criteria.append(criterion("Capacidade empresarial", 20, "sem indicadores financeiros/operacionais verificáveis", missing=True,
+                                  explanation="Sem evidência: máximo de 25% do peso."))
         attention.append("Capacidade econômica insuficientemente documentada.")
 
-    # 5) Reliability — convergence, completeness and conflicts, separate from score.
-    company_field_count = len([v for v in fields.values() if v])
-    completeness = company_field_count / max(1, 13)
-    source_ratio = successful / max(1, source_count)
-    conflict_penalty = min(0.40, len(conflicts) * 0.05)
-    reliability = max(0.0, min(1.0, 0.45*completeness + 0.40*source_ratio + 0.15*(1-conflict_penalty)))
-    rel_points = 10 * reliability
-    criteria.append(criterion(
-        "Confiabilidade das informações", 10,
-        f"{company_field_count} campo(s) cadastral(is), {successful}/{source_count} fonte(s) com resposta, {len(conflicts)} divergência(s)",
-        positive=rel_points,
-        explanation="Mede qualidade/completude/convergência da evidência, não probabilidade de pagamento."
-    ))
-    if conflicts:
-        attention.append("Divergências entre fontes reduzem a confiabilidade, mas permanecem visíveis para conferência.")
+    # 5. Reliability (10): this criterion itself is missing when there is no
+    # research response. Previously it was always marked as evidence, inflating
+    # coverage and making bad research look complete.
+    field_count = len([v for v in fields.values() if v])
+    if successful > 0 or field_count > 0:
+        completeness = min(1.0, field_count / 13)
+        source_ratio = successful / max(1, source_count)
+        independent_ratio = min(1.0, direct_success / 2)
+        conflict_penalty = min(0.50, len(conflicts) * 0.08)
+        reliability = max(0.0, min(1.0,
+            0.35*completeness + 0.25*source_ratio + 0.30*independent_ratio + 0.10*(1-conflict_penalty)))
+        rel_points = 10 * reliability
+        criteria.append(criterion("Confiabilidade das informações", 10,
+            f"{field_count} campo(s), {successful}/{source_count} resposta(s), {direct_success} direta(s), {len(conflicts)} divergência(s)",
+            positive=rel_points,
+            explanation="Mede qualidade da evidência e convergência; não mede capacidade de pagamento."))
+        if conflicts:
+            attention.append("Divergências entre fontes reduzem a confiabilidade e exigem conferência.")
+    else:
+        reliability = 0.0
+        criteria.append(criterion("Confiabilidade das informações", 10, "pesquisa sem resposta útil", missing=True,
+                                  explanation="Sem pesquisa verificável: máximo de 25% do peso."))
+        attention.append("As fontes públicas não retornaram dados suficientes; a análise não pode ser considerada completa.")
 
-    # 6) Commercial history — never infer positive history from absence.
-    criteria.append(criterion(
-        "Histórico comercial identificado", 20,
-        "não informado por histórico interno verificável nesta análise",
-        missing=True,
-        explanation="Sem histórico interno verificável, o critério recebe no máximo 25% do peso."
-    ))
-    attention.append("Histórico comercial/pagamentos internos não informado.")
+    # 6. Commercial history (20): explicit internal payment information is the
+    # only route to a positive/negative score. Absence remains missing.
+    ph = norm(payment_history)
+    if ph in ("BOM", "EM DIA", "POSITIVO"):
+        p = 18.0 if overdue_amount <= 0 else 12.0
+        criteria.append(criterion("Histórico comercial identificado", 20,
+            f"Histórico informado: {payment_history}", positive=p,
+            explanation="Baseado exclusivamente no histórico comercial informado pelo analista."))
+    elif ph in ("ATRASOS", "NEGATIVO", "INADIMPLENTE"):
+        p = 5.0 if overdue_amount <= 0 else 0.0
+        criteria.append(criterion("Histórico comercial identificado", 20,
+            f"Histórico informado: {payment_history}; vencido: {overdue_amount:.2f}", positive=p, negative=15.0,
+            explanation="Atrasos reduzem este critério; o valor vencido informado agrava a análise."))
+        alerts.append("Histórico comercial com atraso/negativo informado.")
+    else:
+        criteria.append(criterion("Histórico comercial identificado", 20,
+            "histórico interno de pagamentos não informado", missing=True,
+            explanation="Sem histórico interno verificável: máximo de 25% do peso."))
+        attention.append("Histórico comercial/pagamentos internos não informado.")
 
     score = round(sum(x["points"] for x in criteria), 1)
-    coverage = round(sum(x["max_points"] for x in criteria if x["status"] == "COM EVIDÊNCIA") / sum(WEIGHTS.values()) * 100, 1)
+    total_weight = sum(WEIGHTS.values())
+    coverage = round(sum(x["max_points"] for x in criteria if x["status"] == "COM EVIDÊNCIA") / total_weight * 100, 1)
+    confidence = round(float(reliability) * 100, 1) if 'reliability' in locals() else 0.0
 
-    # Confidence is independent from score.
-    confidence = round(reliability * 100, 1)
-    financial_available = max(0.0, float(monthly_revenue or 0) * 0.05 - float(exposure or 0))
+    # Financial availability is a policy input, not a claim about the company's
+    # true ability to pay. If no verified revenue exists, it stays zero.
+    if monthly_revenue > 0 and revenue_source in ("Documento financeiro", "Fonte financeira autorizada"):
+        financial_available = max(0.0, monthly_revenue * 0.05 - exposure)
+    else:
+        financial_available = 0.0
+
     dec = decision(score, float(requested or 0), financial_available, coverage, critical_restriction)
+    data_quality = "BOA" if coverage >= 75 and confidence >= 65 else "PARCIAL" if coverage >= 40 else "INSUFICIENTE"
 
     return {
-        "criteria": criteria,
-        "score": score,
-        "coverage": coverage,
-        "confidence": confidence,
-        "risk": risk_band(score),
+        "criteria": criteria, "score": score, "coverage": coverage,
+        "confidence": confidence, "risk": risk_band(score),
+        "data_quality": data_quality,
         "financial_available": round(financial_available, 2),
-        "decision": dec,
-        "positive": positives,
-        "attention": attention,
-        "alerts": alerts,
-        "missing": [x["name"] for x in criteria if x["status"] == "SEM INFORMAÇÃO"],
+        "decision": dec, "positive": positives, "attention": attention,
+        "alerts": alerts, "missing": [x["name"] for x in criteria if x["status"] == "SEM INFORMAÇÃO"],
+        "diagnostics": {
+            "direct_sources_success": direct_success,
+            "search_sources_success": search_success,
+            "total_sources": source_count,
+            "fields_found": field_count,
+            "conflicts": len(conflicts),
+            "research_status": "OK" if successful > 0 else "SEM RESPOSTA",
+        },
     }
+
