@@ -6,7 +6,7 @@ from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc
 from research import research_company
 from config import PRODUCTS, PAYMENT_TERMS
 from storage import Store
-from auth import init_users, has_users, create_user, verify_user
+from auth import init_users, has_users, create_user, verify_user, list_users, reset_password
 
 APP=Path(__file__).parent
 store=Store(APP/'credit.db')
@@ -42,12 +42,29 @@ def login_gate():
         st.image(str(APP/'logo.png'),width=170)
         st.title('Fratelli B2B Crédito')
         st.caption('Acesso restrito')
-        u=st.text_input('Usuário',key='login_u')
+        u=st.text_input('Usuário',key='login_u',placeholder='Ex.: administrador')
         p=st.text_input('Senha',type='password',key='login_p')
         if st.button('ENTRAR',type='primary',use_container_width=True):
             if verify_user(APP/'credit.db',u,p):
-                st.session_state.authenticated=True; st.session_state.username=u; st.rerun()
-            else: st.error('Usuário ou senha inválidos.')
+                st.session_state.authenticated=True; st.session_state.username=' '.join(u.strip().lower().split()); st.rerun()
+            else:
+                st.error('Usuário ou senha inválidos.')
+                st.caption('O usuário não diferencia maiúsculas/minúsculas e espaços no início/fim são ignorados.')
+        with st.expander('Esqueci a senha / recuperação local'):
+            st.warning('Use somente se você tiver acesso ao computador onde o sistema está instalado.')
+            users=list_users(APP/'credit.db')
+            ru=st.selectbox('Usuário para redefinir',users,key='reset_user')
+            rp=st.text_input('Nova senha',type='password',key='reset_p1')
+            rp2=st.text_input('Confirmar nova senha',type='password',key='reset_p2')
+            confirm=st.checkbox('Confirmo que quero redefinir esta senha neste computador.',key='reset_confirm')
+            if st.button('REDEFINIR SENHA',use_container_width=True):
+                if not confirm:
+                    st.error('Marque a confirmação para continuar.')
+                elif rp!=rp2:
+                    st.error('As senhas não conferem.')
+                else:
+                    ok,msg=reset_password(APP/'credit.db',ru,rp)
+                    st.success(msg) if ok else st.error(msg)
     st.markdown('</div>',unsafe_allow_html=True)
     return False
 
@@ -70,7 +87,7 @@ def render_decision(result):
 
 if menu=='Nova análise':
     st.title('Nova análise de crédito')
-    st.caption('Motor enxuto: 4 pilares de decisão. O histórico interno entra como ajuste comercial, não como critério que derruba sozinho um cliente sem histórico.')
+    st.caption('Motor de 5 critérios: inclui tempo de atividade como fator independente. O histórico interno continua como ajuste comercial, não como penalização estrutural para empresas sem histórico.')
     cnpj=st.text_input('CNPJ',placeholder='00.000.000/0000-00')
     requested=st.number_input('Valor do pedido (opcional)',min_value=0.0,step=100.0,format='%.2f')
     payment=st.selectbox('Condição de pagamento',[x['label'] for x in PAYMENT_TERMS])
@@ -93,6 +110,15 @@ if menu=='Nova análise':
     r=st.session_state.get('result')
     if r:
         render_decision(r); d=r['dossier']; f=d['fields']
+        st.subheader('Sugestão comercial dentro do limite')
+        suggestions=suggest_products(r['available'], r['score'], r['confidence'], PRODUCTS)
+        if suggestions:
+            st.dataframe(pd.DataFrame(suggestions)[['name','boxes','units','box_value','used','remaining']].rename(columns={
+                'name':'Produto','boxes':'Caixas sugeridas','units':'Unidades','box_value':'Valor por caixa','used':'Valor utilizado','remaining':'Saldo após sugestão'
+            }), use_container_width=True, hide_index=True)
+            st.caption('As sugestões são calculadas automaticamente para não ultrapassar o limite disponível. O catálogo é configurável pelo administrador.')
+        else:
+            st.info('Nenhum produto do catálogo cabe no limite disponível. Reduza a quantidade ou revise a política de crédito.')
         st.subheader(r['company']); st.write(f"CNPJ: **{r['cnpj']}**")
         cols=st.columns(4); cols[0].metric('Fontes responderam',f"{d['successful_sources']}/{d['source_count']}"); cols[1].metric('Campos encontrados',len(f)); cols[2].metric('Divergências',len(d['conflicts'])); cols[3].metric('Cobertura do score',f"{r['coverage']:.0f}%")
         st.subheader('Raio-X')
@@ -122,9 +148,11 @@ elif menu=='Simulação do pedido':
     result=analyze(r['dossier'],requested,r.get('internal_payment_status','Sem histórico'),r.get('overdue',0),r['exposure'],term.get('risk_factor',0))
     a,b,c=st.columns(3); a.metric('Valor do pedido',money(requested)); b.metric('Limite disponível',money(result['available'])); c.metric('Excesso',money(result['order']['excess']))
     render_decision(result); st.write(f"**{boxes} caixas × {p['units_per_box']} unidades = {sim['units']} unidades**")
+    safe_boxes=box_calc(result['available'],p['unit_price'],p['units_per_box'])['boxes']
     if result['order']['decision']!='APROVAR':
-        safe_boxes=box_calc(result['available'],p['unit_price'],p['units_per_box'])['boxes']
         st.info(f"Contraproposta operacional: até {safe_boxes} caixas dentro do limite disponível, ou encaminhar para análise excepcional conforme a política interna.")
+    else:
+        st.success(f"Pedido dentro do limite: até {safe_boxes} caixas deste produto permanecem cobertas pelo limite disponível.")
 
 elif menu=='Histórico':
     st.title('Histórico de análises'); rows=store.history(); st.dataframe(pd.DataFrame(rows,columns=['Data','CNPJ','Empresa','Score','Confiança','Limite','Pedido','Decisão']),use_container_width=True,hide_index=True)
@@ -135,4 +163,4 @@ elif menu=='Carteira':
 
 else:
     st.title('Metodologia')
-    st.markdown('''### Motor de decisão 6.4\n\n**4 pilares**\n1. Legitimidade e cadastro — 25 pontos\n2. Estrutura e capacidade — 25 pontos\n3. Histórico público e risco — 25 pontos\n4. Qualidade das evidências — 25 pontos\n\nO histórico interno deixa de ser um critério de 20 pontos que derruba automaticamente empresas novas. Ele funciona como ajuste comercial pequeno: em dia, atrasos ou inadimplência.\n\nA ausência de informação reduz a pontuação, mas não destrói o score; a **confiança** mostra separadamente o quanto da análise foi sustentado por fontes.''')
+    st.markdown('''### Motor de decisão 6.4.3\n\n**5 critérios**\n1. Legitimidade e cadastro — 20 pontos\n2. Tempo de atividade — 10 pontos\n3. Estrutura e capacidade — 25 pontos\n4. Histórico público e risco — 20 pontos\n5. Qualidade das evidências — 25 pontos\n\n**Tempo de atividade:** menos de 1 ano = 10% do critério; entre 1 e 3 anos = 60%; acima de 3 anos = 100%.\n\nO histórico interno deixa de ser um critério de 20 pontos que derruba automaticamente empresas novas. Ele funciona como ajuste comercial pequeno: em dia, atrasos ou inadimplência.\n\nA ausência de informação reduz a pontuação, mas não destrói o score; a **confiança** mostra separadamente o quanto da análise foi sustentado por fontes.''')

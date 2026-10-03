@@ -8,12 +8,14 @@ from config import LIMIT_BANDS, MISSING_FACTOR
 
 # Four decision pillars. Commercial history is a modifier, not a fifth penalty bucket.
 WEIGHTS = {
-    "Legitimidade e cadastro": 25,
+    "Legitimidade e cadastro": 20,
+    "Tempo de atividade": 10,
     "Estrutura e capacidade": 25,
-    "Histórico público e risco": 25,
+    "Histórico público e risco": 20,
     "Qualidade das evidências": 25,
 }
-MISSING_FACTOR = 0.50
+# Missing information earns only the configured partial factor; it is never treated as a positive fact.
+MISSING_FACTOR = 0.25
 
 
 def clean_cnpj(value: str) -> str:
@@ -92,47 +94,61 @@ def analyze(dossier: Dict[str, Any], requested: float = 0.0,
     conflicts = dossier.get("conflicts", [])
     successful = dossier.get("successful_sources", 0)
     total = dossier.get("source_count", 0)
-    critical_flags = dossier.get("critical_flags", [])
+    critical_flags = list(dossier.get("critical_flags", []))
     partners = dossier.get("partners", [])
     status = str(fields.get("Situação cadastral", "")).upper()
+    if any(x in status for x in ("INAPTA", "BAIXADA", "SUSPENSA")) and not critical_flags:
+        critical_flags.append(f"Situação cadastral crítica: {status}.")
     age = age_years(fields.get("Data de abertura"))
     criteria=[]
 
-    # 1) Legitimidade/cadastro: status, age and identity fields.
+    # 1) Legitimidade/cadastro: status and identity fields.
     reg=None; details=[]
     if status or fields:
-        reg = 14.0 if "ATIVA" in status else 4.0 if any(x in status for x in ("INAPTA","BAIXADA","SUSPENSA")) else 9.0
-        if age is not None: reg += min(5.0, max(0.0, age/3))
-        reg += min(6.0, sum(bool(fields.get(k)) for k in ("Razão social","CNPJ","Endereço","CNAE principal","Natureza jurídica")) * 1.2)
-        reg=min(25.0,reg)
+        reg = 12.0 if "ATIVA" in status else 3.0 if any(x in status for x in ("INAPTA","BAIXADA","SUSPENSA")) else 7.0
+        reg += min(4.0, sum(bool(fields.get(k)) for k in ("Razão social","CNPJ","Endereço","CNAE principal","Natureza jurídica")) * 0.8)
+        reg=min(20.0,reg)
         details=[f"Situação: {status or 'não identificada'}."]
-        if age is not None: details.append(f"Idade estimada: {age:.1f} anos.")
-    criteria.append(criterion("Legitimidade e cadastro",25,reg,"Existência, situação e consistência dos dados cadastrais.",details))
+    criteria.append(criterion("Legitimidade e cadastro",20,reg,"Existência, situação e consistência dos dados cadastrais.",details))
 
-    # 2) Structure/capacity: observable fields, without inventing revenue.
+    # 2) Time in business is an independent criterion.
+    # User policy: <1 year = 10%; 1–3 years = 60%; >3 years = 100%.
+    age_points=None; age_details=[]
+    if age is not None:
+        if age < 1.0:
+            factor=0.10; faixa="menos de 1 ano"
+        elif age <= 3.0:
+            factor=0.60; faixa="entre 1 e 3 anos"
+        else:
+            factor=1.00; faixa="acima de 3 anos"
+        age_points=10.0*factor
+        age_details=[f"Idade estimada: {age:.1f} anos.", f"Faixa: {faixa}.", f"Pontuação aplicada: {factor*100:.0f}% do critério."]
+    criteria.append(criterion("Tempo de atividade",10,age_points,"Tempo desde a data de abertura do CNPJ.",age_details))
+
+    # 3) Structure/capacity: observable fields, without inventing revenue.
     struct=None; sdet=[]
     if successful or fields:
         struct=8.0
-        struct += min(5.0, sum(bool(fields.get(k)) for k in ("Capital social","Porte","CNAE principal","Natureza jurídica"))*1.25)
+        struct += min(7.0, sum(bool(fields.get(k)) for k in ("Capital social","Porte","CNAE principal","Natureza jurídica"))*1.75)
         struct += min(5.0, len(partners)*1.5)
         struct += 2.0 if dossier.get("public_presence") else 0.0
-        struct += 2.0 if fields.get("Capital social") else 0.0
+        struct += 3.0 if fields.get("Capital social") else 0.0
         struct=max(0,min(25,struct))
         sdet=[f"Sócios identificados: {len(partners)}.", "Faturamento não identificado em fonte pública confiável." if not dossier.get("verified_revenue") else "Faturamento público verificado disponível."]
     criteria.append(criterion("Estrutura e capacidade",25,struct,"Porte, capital, atividade, estrutura e presença pública observáveis.",sdet))
 
-    # 3) Public history/risk. Lack of negative evidence is not treated as a positive claim.
+    # 4) Public history/risk. Lack of negative evidence is not treated as a positive claim.
     hist=None; hdet=[]
     if successful or fields:
-        hist=20.0
-        hist -= min(12.0,len(critical_flags)*6.0)
-        hist -= min(5.0,len(conflicts)*1.25)
+        hist=16.0
+        hist -= min(10.0,len(critical_flags)*5.0)
+        hist -= min(5.0,len(conflicts)*1.0)
         if dossier.get("public_presence"): hist += 2.0
-        hist=max(0,min(25,hist))
+        hist=max(0,min(20,hist))
         hdet=critical_flags or ["Nenhum evento crítico identificado nas fontes que responderam; isso não prova ausência em todas as bases."]
-    criteria.append(criterion("Histórico público e risco",25,hist,"Sinais públicos de risco, status e divergências entre fontes.",hdet))
+    criteria.append(criterion("Histórico público e risco",20,hist,"Sinais públicos de risco, status e divergências entre fontes.",hdet))
 
-    # 4) Evidence quality. This is where source coverage belongs, so missing sources do not get counted twice.
+    # 5) Evidence quality. This is where source coverage belongs, so missing sources do not get counted twice.
     rel=None
     if total or successful:
         ratio=successful/max(1,total)
@@ -193,6 +209,39 @@ def risk_band(score: float) -> str:
     if score <= 70: return "RISCO CONTROLADO"
     return "RISCO INDIVIDUALIZADO"
 
+
+
+def suggest_products(available_limit: float, score: float, confidence: float, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a conservative, configurable product/box suggestion for a generic B2B catalog.
+    Suggestions never exceed the available credit limit.
+    """
+    if available_limit <= 0 or not products:
+        return []
+    eligible = []
+    # Higher-quality evidence unlocks a broader configurable catalog; this is a policy rule, not a product valuation.
+    if score < 35 or confidence < 50:
+        max_items = 1
+    elif score < 55 or confidence < 65:
+        max_items = min(2, len(products))
+    else:
+        max_items = min(3, len(products))
+    for p in products[:max_items]:
+        price = money(p.get("unit_price", 0))
+        upb = max(1, int(p.get("units_per_box", 1)))
+        box_value = money(price * upb)
+        if box_value <= 0:
+            continue
+        boxes = math.floor(available_limit / box_value)
+        if boxes > 0:
+            eligible.append({
+                "name": p.get("name", "Produto"),
+                "boxes": boxes,
+                "units": boxes * upb,
+                "box_value": box_value,
+                "used": money(boxes * box_value),
+                "remaining": money(available_limit - boxes * box_value),
+            })
+    return eligible
 
 def box_calc(limit: float, unit_price: float, units_per_box: int=9) -> Dict[str,Any]:
     bv=money(unit_price)*max(1,int(units_per_box))
