@@ -67,7 +67,7 @@ APP=Path(__file__).parent
 store=Store(APP/'credit.db')
 init_users(APP/'credit.db')
 
-st.set_page_config(page_title='B2B Crédito 6.5.1',page_icon='logo.png',layout='wide')
+st.set_page_config(page_title='B2B Crédito 6.5.2',page_icon='logo.png',layout='wide')
 
 st.markdown('''<style>
 .block-container{padding-top:1rem}.decision{padding:18px;border-radius:12px;border:1px solid #ddd;margin:10px 0}.muted{color:#6b7280}.danger{border-left:5px solid #b91c1c}.warn{border-left:5px solid #d97706}.ok{border-left:5px solid #15803d}
