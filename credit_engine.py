@@ -4,7 +4,11 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from config import LIMIT_BANDS, MISSING_FACTOR, COMMERCIAL_DISCOUNT_TIERS
+from config import LIMIT_BANDS, MISSING_FACTOR
+try:
+    from config import COMMERCIAL_DISCOUNT_TIERS
+except ImportError:
+    COMMERCIAL_DISCOUNT_TIERS = []
 
 # Four decision pillars. Commercial history is a modifier, not a fifth penalty bucket.
 WEIGHTS = {

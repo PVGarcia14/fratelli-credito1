@@ -2,9 +2,14 @@ from __future__ import annotations
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products
+from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products, order_value_for_boxes
 from research import research_company
-from config import PRODUCTS, PAYMENT_TERMS, COMMERCIAL_DISCOUNT_TIERS
+from config import PRODUCTS, PAYMENT_TERMS
+try:
+    from config import COMMERCIAL_DISCOUNT_TIERS
+except ImportError:
+    # Compatibility with older deployments: the commercial policy is optional.
+    COMMERCIAL_DISCOUNT_TIERS = []
 from storage import Store
 from auth import init_users, has_users, create_user, verify_user, list_users, list_user_records, reset_password, register_login, is_admin, deactivate_user
 
@@ -190,7 +195,6 @@ elif menu=='Simulação do pedido':
     if not r: st.warning('Faça uma análise primeiro.'); st.stop()
     product=st.selectbox('Produto',[p['name'] for p in PRODUCTS]); p=next(x for x in PRODUCTS if x['name']==product)
     boxes=st.number_input('Quantidade de caixas',min_value=0,step=1); term_label=st.selectbox('Prazo',[x['label'] for x in PAYMENT_TERMS]); term=next(x for x in PAYMENT_TERMS if x['label']==term_label)
-    from credit_engine import order_value_for_boxes
     sim=order_value_for_boxes(boxes,p['unit_price'],p['units_per_box'],COMMERCIAL_DISCOUNT_TIERS); requested=sim['net']
     result=analyze(r['dossier'],requested,r.get('internal_payment_status','Sem histórico'),r.get('overdue',0),r['exposure'],term.get('risk_factor',0))
     a,b,c,d=st.columns(4); a.metric('Valor bruto',money(sim['gross'])); b.metric('Desconto',f"{sim['discount_rate']*100:.0f}%"); c.metric('Valor líquido',money(requested)); d.metric('Limite disponível',money(result['available']))
