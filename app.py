@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products
 from research import research_company
-from config import PRODUCTS, PAYMENT_TERMS
+from config import PRODUCTS, PAYMENT_TERMS, COMMERCIAL_DISCOUNT_TIERS
 from storage import Store
 from auth import init_users, has_users, create_user, verify_user, list_users, list_user_records, reset_password, register_login, is_admin, deactivate_user
 
@@ -155,12 +155,14 @@ elif menu=='Nova análise':
     if r:
         render_decision(r); d=r['dossier']; f=d['fields']
         st.subheader('Sugestão comercial dentro do limite')
-        suggestions=suggest_products(r['available'], r['score'], r['confidence'], PRODUCTS)
+        suggestions=suggest_products(r['available'], r['score'], r['confidence'], PRODUCTS, COMMERCIAL_DISCOUNT_TIERS)
         if suggestions:
-            st.dataframe(pd.DataFrame(suggestions)[['name','boxes','units','box_value','used','remaining']].rename(columns={
-                'name':'Produto','boxes':'Caixas sugeridas','units':'Unidades','box_value':'Valor por caixa','used':'Valor utilizado','remaining':'Saldo após sugestão'
+            st.dataframe(pd.DataFrame(suggestions)[['name','boxes','units','gross','discount_rate','discount_value','net','remaining']].rename(columns={
+                'name':'Produto','boxes':'Caixas sugeridas','units':'Unidades','gross':'Valor bruto',
+                'discount_rate':'Desconto','discount_value':'Valor do desconto','net':'Valor líquido',
+                'remaining':'Saldo após sugestão'
             }), use_container_width=True, hide_index=True)
-            st.caption('As sugestões são calculadas automaticamente para não ultrapassar o limite disponível. O catálogo é configurável pelo administrador.')
+            st.caption('O cálculo usa exclusivamente o saldo disponível da análise. Primeiro aplica a condição comercial configurada; depois valida o valor líquido contra o saldo. O catálogo e as faixas de desconto são configuráveis pelo administrador.')
         else:
             st.info('Nenhum produto do catálogo cabe no limite disponível. Reduza a quantidade ou revise a política de crédito.')
         st.subheader(r['company']); st.write(f"CNPJ: **{r['cnpj']}**")
@@ -188,9 +190,10 @@ elif menu=='Simulação do pedido':
     if not r: st.warning('Faça uma análise primeiro.'); st.stop()
     product=st.selectbox('Produto',[p['name'] for p in PRODUCTS]); p=next(x for x in PRODUCTS if x['name']==product)
     boxes=st.number_input('Quantidade de caixas',min_value=0,step=1); term_label=st.selectbox('Prazo',[x['label'] for x in PAYMENT_TERMS]); term=next(x for x in PAYMENT_TERMS if x['label']==term_label)
-    sim=box_calc(boxes*p['unit_price']*p['units_per_box'],p['unit_price'],p['units_per_box']); requested=sim['used']
+    from credit_engine import order_value_for_boxes
+    sim=order_value_for_boxes(boxes,p['unit_price'],p['units_per_box'],COMMERCIAL_DISCOUNT_TIERS); requested=sim['net']
     result=analyze(r['dossier'],requested,r.get('internal_payment_status','Sem histórico'),r.get('overdue',0),r['exposure'],term.get('risk_factor',0))
-    a,b,c=st.columns(3); a.metric('Valor do pedido',money(requested)); b.metric('Limite disponível',money(result['available'])); c.metric('Excesso',money(result['order']['excess']))
+    a,b,c,d=st.columns(4); a.metric('Valor bruto',money(sim['gross'])); b.metric('Desconto',f"{sim['discount_rate']*100:.0f}%"); c.metric('Valor líquido',money(requested)); d.metric('Limite disponível',money(result['available']))
     render_decision(result); st.write(f"**{boxes} caixas × {p['units_per_box']} unidades = {sim['units']} unidades**")
     safe_boxes=box_calc(result['available'],p['unit_price'],p['units_per_box'])['boxes']
     if result['order']['decision']!='APROVAR':

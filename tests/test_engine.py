@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from credit_engine import validate_cnpj, score_limit, box_calc, analyze
+from credit_engine import validate_cnpj, score_limit, box_calc, analyze, order_value_for_boxes, suggest_products
 
 
 def dossier(age_date, status="ATIVA", fields_extra=None):
@@ -52,3 +52,39 @@ def test_over_limit():
     d=dossier('2015-01-01')
     r=analyze(d,requested=50000)
     assert r['order']['decision'] in ('APROVAR COM LIMITE','ANÁLISE EXCEPCIONAL','RECUSAR')
+
+
+def test_discount_is_applied_before_limit_check():
+    tiers=[
+        {"min_boxes":1,"max_boxes":2,"min_units":None,"max_units":None,"discount":0.10},
+        {"min_boxes":3,"max_boxes":None,"min_units":None,"max_units":34,"discount":0.20},
+        {"min_boxes":None,"max_boxes":None,"min_units":36,"max_units":None,"discount":0.30},
+    ]
+    r=order_value_for_boxes(2,100,9,tiers)
+    assert r['gross']==1800 and r['discount_rate']==0.10 and r['net']==1620
+    r2=order_value_for_boxes(3,100,9,tiers)
+    assert r2['discount_rate']==0.20 and r2['net']==2160
+    r3=order_value_for_boxes(4,100,9,tiers)
+    assert r3['discount_rate']==0.30 and r3['net']==2520
+
+def test_suggestion_uses_available_balance_and_net_value():
+    tiers=[
+        {"min_boxes":1,"max_boxes":2,"min_units":None,"max_units":None,"discount":0.10},
+        {"min_boxes":3,"max_boxes":None,"min_units":None,"max_units":34,"discount":0.20},
+        {"min_boxes":None,"max_boxes":None,"min_units":36,"max_units":None,"discount":0.30},
+    ]
+    products=[{'name':'Produto X','unit_price':100,'units_per_box':9}]
+    out=suggest_products(1700,80,90,products,tiers)
+    assert out[0]['boxes']==2
+    assert out[0]['net']==1620
+    assert out[0]['remaining']==80
+
+def test_suggestion_never_exceeds_available_balance():
+    tiers=[
+        {"min_boxes":1,"max_boxes":2,"min_units":None,"max_units":None,"discount":0.10},
+        {"min_boxes":3,"max_boxes":None,"min_units":None,"max_units":34,"discount":0.20},
+        {"min_boxes":None,"max_boxes":None,"min_units":36,"max_units":None,"discount":0.30},
+    ]
+    products=[{'name':'Produto X','unit_price':100,'units_per_box':9}]
+    out=suggest_products(1000,80,90,products,tiers)
+    assert out[0]['net'] <= 1000

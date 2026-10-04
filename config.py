@@ -27,3 +27,12 @@ LIMIT_BANDS = [
 ]
 
 MISSING_FACTOR = 0.25
+
+
+# Generic B2B commercial discount tiers. Configure percentages for the catalog in use.
+# A tier may be limited by boxes, units, or both. Values are fractions (0.10 = 10%).
+COMMERCIAL_DISCOUNT_TIERS = [
+    {"min_boxes": 1, "max_boxes": 2, "min_units": None, "max_units": None, "discount": 0.00},
+    {"min_boxes": 3, "max_boxes": None, "min_units": None, "max_units": 34, "discount": 0.00},
+    {"min_boxes": None, "max_boxes": None, "min_units": 36, "max_units": None, "discount": 0.00},
+]
