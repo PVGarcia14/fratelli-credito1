@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-# Generic B2B configuration. Product names/prices/terms are intentionally placeholders.
-# Keep commercial catalog values in this file or replace with your own internal catalog.
+# Generic B2B catalog. Configure the actual catalog for your permitted business use.
+# The engine never invents product names or prices: the values shown in the UI come from here.
 PRODUCTS = [
     {"name": "Produto A", "unit_price": 100.00, "units_per_box": 9},
     {"name": "Produto B", "unit_price": 120.00, "units_per_box": 9},
@@ -17,7 +17,6 @@ PAYMENT_TERMS = [
     {"label": "60 dias", "days": 60, "risk_factor": 0.20},
 ]
 
-# Policy supplied by the project specification.
 LIMIT_BANDS = [
     (0, 25, 0.0),
     (25, 35, 1500.0),
@@ -28,11 +27,10 @@ LIMIT_BANDS = [
 
 MISSING_FACTOR = 0.25
 
-
-# Generic B2B commercial discount tiers. Configure percentages for the catalog in use.
-# A tier may be limited by boxes, units, or both. Values are fractions (0.10 = 10%).
+# Generic configurable commercial policy. Percentages are intentionally neutral examples.
+# The administrator can change these for the permitted catalog in use.
 COMMERCIAL_DISCOUNT_TIERS = [
-    {"min_boxes": 1, "max_boxes": 2, "min_units": None, "max_units": None, "discount": 0.00},
-    {"min_boxes": 3, "max_boxes": None, "min_units": None, "max_units": 34, "discount": 0.00},
-    {"min_boxes": None, "max_boxes": None, "min_units": 36, "max_units": None, "discount": 0.00},
+    {"min_boxes": 1, "max_boxes": 2, "min_units": None, "max_units": None, "discount": 0.10},
+    {"min_boxes": 3, "max_boxes": None, "min_units": None, "max_units": 34, "discount": 0.15},
+    {"min_boxes": None, "max_boxes": None, "min_units": 36, "max_units": None, "discount": 0.20},
 ]

@@ -216,12 +216,7 @@ def risk_band(score: float) -> str:
 
 
 def commercial_discount(boxes: int, units: int, tiers: Optional[List[Dict[str, Any]]] = None) -> float:
-    """Return the configured generic B2B discount for a quantity.
-
-    Tiers can use boxes, units, or both. The first matching tier wins.
-    This allows policies such as a first tier based on boxes and later tiers
-    based on total units without hard-coding a specific product.
-    """
+    """Return the first matching configured discount tier."""
     b=max(0,int(boxes)); u=max(0,int(units))
     for tier in (tiers or COMMERCIAL_DISCOUNT_TIERS):
         min_b=tier.get("min_boxes"); max_b=tier.get("max_boxes")
@@ -236,7 +231,7 @@ def commercial_discount(boxes: int, units: int, tiers: Optional[List[Dict[str, A
 
 def order_value_for_boxes(boxes: int, unit_price: float, units_per_box: int = 9,
                           tiers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """Calculate gross/net order value; discount is applied before limit validation."""
+    """Calculate gross, applicable discount and net value for whole boxes."""
     b=max(0,int(boxes)); upb=max(1,int(units_per_box)); price=money(unit_price)
     units=b*upb
     gross=money(b*upb*price)
@@ -247,36 +242,55 @@ def order_value_for_boxes(boxes: int, unit_price: float, units_per_box: int = 9,
             "discount_value":discount_value,"net":net}
 
 
+def max_boxes_within_limit(available_limit: float, unit_price: float, units_per_box: int = 9,
+                           tiers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Find the largest whole-box quantity whose NET value is <= available credit.
+
+    Uses a monotonic binary search over whole boxes. This avoids underestimating the
+    quantity when discounts make the net value materially lower than the gross value.
+    """
+    available=money(available_limit); price=money(unit_price); upb=max(1,int(units_per_box))
+    if available <= 0 or price <= 0: return order_value_for_boxes(0,price,upb,tiers)
+    gross_box=price*upb
+    high=max(1, math.floor(available/gross_box)+2)
+    while order_value_for_boxes(high,price,upb,tiers)["net"] <= available + 1e-9:
+        high*=2
+    low=0
+    while low < high:
+        mid=(low+high+1)//2
+        if order_value_for_boxes(mid,price,upb,tiers)["net"] <= available + 1e-9:
+            low=mid
+        else:
+            high=mid-1
+    return order_value_for_boxes(low,price,upb,tiers)
+
+
 def suggest_products(available_limit: float, score: float, confidence: float, products: List[Dict[str, Any]],
                      tiers: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-    """Suggest the maximum whole-box order that fits the *available* credit.
+    """Suggest the maximum whole-box order for each eligible configured product.
 
-    The real available balance is the hard ceiling. For every candidate quantity
-    the engine first calculates the configured commercial discount, then compares
-    the resulting net value against the available balance.
+    The available balance is an absolute ceiling and the NET value after the
+    applicable commercial discount is what is checked against that ceiling.
     """
     available=money(available_limit)
     if available <= 0 or not products: return []
-    eligible=[]
     if score < 35 or confidence < 50: max_items=1
     elif score < 55 or confidence < 65: max_items=min(2,len(products))
     else: max_items=min(3,len(products))
+    eligible=[]
     for p in products[:max_items]:
+        name=str(p.get("name") or "Produto")
         price=money(p.get("unit_price",0)); upb=max(1,int(p.get("units_per_box",1)))
         if price <= 0: continue
-        max_boxes=math.floor(available/(price*upb))+1
-        best=None
-        for boxes in range(max(0,max_boxes),-1,-1):
-            calc=order_value_for_boxes(boxes,price,upb,tiers)
-            if calc["net"] <= available+1e-9:
-                best=calc; break
-        if best and best["boxes"]>0:
-            eligible.append({"name":p.get("name","Produto"),"boxes":best["boxes"],
-                "units":best["units"],"unit_price":price,"gross":best["gross"],
-                "discount_rate":best["discount_rate"],"discount_value":best["discount_value"],
-                "net":best["net"],"box_value":money(best["net"]/best["boxes"]),
-                "used":best["net"],"remaining":money(available-best["net"])})
+        best=max_boxes_within_limit(available,price,upb,tiers)
+        if best["boxes"]>0:
+            eligible.append({"name":name,"boxes":best["boxes"],"units":best["units"],
+                "unit_price":price,"gross":best["gross"],"discount_rate":best["discount_rate"],
+                "discount_value":best["discount_value"],"net":best["net"],
+                "box_value":money(best["net"]/best["boxes"]),"used":best["net"],
+                "remaining":money(available-best["net"])})
     return eligible
+
 
 def box_calc(limit: float, unit_price: float, units_per_box: int=9) -> Dict[str,Any]:
     bv=money(unit_price)*max(1,int(units_per_box))

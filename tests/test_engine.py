@@ -88,3 +88,23 @@ def test_suggestion_never_exceeds_available_balance():
     products=[{'name':'Produto X','unit_price':100,'units_per_box':9}]
     out=suggest_products(1000,80,90,products,tiers)
     assert out[0]['net'] <= 1000
+
+def test_discount_boundary_by_whole_boxes():
+    tiers=[
+        {"min_boxes":1,"max_boxes":2,"min_units":None,"max_units":None,"discount":0.10},
+        {"min_boxes":3,"max_boxes":None,"min_units":None,"max_units":34,"discount":0.20},
+        {"min_boxes":None,"max_boxes":None,"min_units":36,"max_units":None,"discount":0.30},
+    ]
+    assert order_value_for_boxes(2,100,9,tiers)['discount_rate']==0.10
+    assert order_value_for_boxes(3,100,9,tiers)['discount_rate']==0.20
+    assert order_value_for_boxes(4,100,9,tiers)['discount_rate']==0.30
+
+def test_max_boxes_accounts_for_discount():
+    tiers=[
+        {"min_boxes":1,"max_boxes":2,"min_units":None,"max_units":None,"discount":0.10},
+        {"min_boxes":3,"max_boxes":None,"min_units":None,"max_units":34,"discount":0.20},
+        {"min_boxes":None,"max_boxes":None,"min_units":36,"max_units":None,"discount":0.30},
+    ]
+    from credit_engine import max_boxes_within_limit
+    r=max_boxes_within_limit(2500,100,9,tiers)
+    assert r['boxes']==3 and r['net']==2160

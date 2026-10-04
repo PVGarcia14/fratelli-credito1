@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products, order_value_for_boxes
+from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products, order_value_for_boxes, max_boxes_within_limit
 from research import research_company
 from config import PRODUCTS, PAYMENT_TERMS
 try:
@@ -167,7 +167,7 @@ elif menu=='Nova análise':
                 'discount_rate':'Desconto','discount_value':'Valor do desconto','net':'Valor líquido',
                 'remaining':'Saldo após sugestão'
             }), use_container_width=True, hide_index=True)
-            st.caption('O cálculo usa exclusivamente o saldo disponível da análise. Primeiro aplica a condição comercial configurada; depois valida o valor líquido contra o saldo. O catálogo e as faixas de desconto são configuráveis pelo administrador.')
+            st.caption('Cada linha usa o nome, preço e unidades/caixa do catálogo configurado. O saldo disponível é o teto absoluto: o desconto é aplicado antes da validação e a maior quantidade de caixas cujo valor líquido cabe no saldo é calculada automaticamente.')
         else:
             st.info('Nenhum produto do catálogo cabe no limite disponível. Reduza a quantidade ou revise a política de crédito.')
         st.subheader(r['company']); st.write(f"CNPJ: **{r['cnpj']}**")
@@ -199,7 +199,8 @@ elif menu=='Simulação do pedido':
     result=analyze(r['dossier'],requested,r.get('internal_payment_status','Sem histórico'),r.get('overdue',0),r['exposure'],term.get('risk_factor',0))
     a,b,c,d=st.columns(4); a.metric('Valor bruto',money(sim['gross'])); b.metric('Desconto',f"{sim['discount_rate']*100:.0f}%"); c.metric('Valor líquido',money(requested)); d.metric('Limite disponível',money(result['available']))
     render_decision(result); st.write(f"**{boxes} caixas × {p['units_per_box']} unidades = {sim['units']} unidades**")
-    safe_boxes=box_calc(result['available'],p['unit_price'],p['units_per_box'])['boxes']
+    safe_calc=max_boxes_within_limit(result['available'],p['unit_price'],p['units_per_box'],COMMERCIAL_DISCOUNT_TIERS)
+    safe_boxes=safe_calc['boxes']
     if result['order']['decision']!='APROVAR':
         st.info(f"Contraproposta operacional: até {safe_boxes} caixas dentro do limite disponível, ou encaminhar para análise excepcional conforme a política interna.")
     else:
