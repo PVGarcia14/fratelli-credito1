@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc
+from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products
 from research import research_company
 from config import PRODUCTS, PAYMENT_TERMS
 from storage import Store
@@ -30,7 +30,7 @@ def login_gate():
         st.image(str(APP/'logo.png'), width=170)
         st.title('Acesso ao Fratelli B2B Crédito')
         st.success(f"Você está conectado como **{st.session_state.get('username','')}**.")
-        if st.button('SAIR DA CONTA', type='primary', use_container_width=True):
+        if st.button('SAIR DA CONTA', type='primary', use_container_width=True, key='login_gate_logout_button'):
             st.session_state.clear(); st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
         return True
@@ -109,7 +109,7 @@ if not login_gate(): st.stop()
 with st.sidebar:
     st.image(str(APP/'logo.png'),width=130)
     st.caption(f"Usuário: **{st.session_state.get('username','')}**")
-    if st.button('Sair',use_container_width=True):
+    if st.button('Sair',use_container_width=True, key='sidebar_logout_button'):
         st.session_state.clear(); st.rerun()
     menu_items=['Login','Nova análise','Simulação do pedido','Histórico','Carteira']
     if st.session_state.get('role')=='admin': menu_items += ['Usuários']
@@ -125,7 +125,9 @@ def render_decision(result):
     st.markdown(f'**Por que:** {o["reason"]}')
 
 if menu=='Login':
-    login_gate()
+    st.title('Acesso ao sistema')
+    st.success(f"Você está conectado como **{st.session_state.get('username','')}**.")
+    st.caption('A autenticação já foi concluída. Use o botão Sair no menu lateral para encerrar a sessão.')
 
 elif menu=='Nova análise':
     st.title('Nova análise de crédito')
