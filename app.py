@@ -2,7 +2,57 @@ from __future__ import annotations
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-from credit_engine import clean_cnpj, validate_cnpj, analyze, box_calc, suggest_products, order_value_for_boxes, max_boxes_within_limit
+import credit_engine as _ce
+clean_cnpj = _ce.clean_cnpj
+validate_cnpj = _ce.validate_cnpj
+analyze = _ce.analyze
+
+# Keep the app compatible with older deployments while the full 6.5.1 package is being rolled out.
+try:
+    box_calc = _ce.box_calc
+except AttributeError:
+    def box_calc(limit, unit_price, units_per_box=9):
+        import math
+        bv=max(0.0,float(unit_price))*max(1,int(units_per_box))
+        boxes=0 if bv<=0 else math.floor(max(0.0,float(limit))/bv + 1e-9)
+        return {'boxes':boxes,'units':boxes*max(1,int(units_per_box)),'box_value':round(bv,2),'used':round(boxes*bv,2),'remaining':round(max(0.0,float(limit))-boxes*bv,2)}
+
+try:
+    order_value_for_boxes = _ce.order_value_for_boxes
+except AttributeError:
+    def order_value_for_boxes(boxes, unit_price, units_per_box=9, tiers=None):
+        b=max(0,int(boxes)); u=max(1,int(units_per_box)); gross=round(b*u*float(unit_price),2)
+        rate=0.0
+        for t in (tiers or []):
+            if t.get('min_boxes') is not None and b < int(t['min_boxes']): continue
+            if t.get('max_boxes') is not None and b > int(t['max_boxes']): continue
+            units=b*u
+            if t.get('min_units') is not None and units < int(t['min_units']): continue
+            if t.get('max_units') is not None and units > int(t['max_units']): continue
+            rate=max(0.0,min(1.0,float(t.get('discount',0)))); break
+        disc=round(gross*rate,2); return {'boxes':b,'units':b*u,'gross':gross,'discount_rate':rate,'discount_value':disc,'net':round(gross-disc,2)}
+
+try:
+    max_boxes_within_limit = _ce.max_boxes_within_limit
+except AttributeError:
+    def max_boxes_within_limit(available_limit, unit_price, units_per_box=9, tiers=None):
+        available=max(0.0,float(available_limit)); best=order_value_for_boxes(0,unit_price,units_per_box,tiers)
+        for b in range(1,100000):
+            cur=order_value_for_boxes(b,unit_price,units_per_box,tiers)
+            if cur['net'] <= available + 1e-9: best=cur
+            else: break
+        return best
+
+try:
+    suggest_products = _ce.suggest_products
+except AttributeError:
+    def suggest_products(available_limit, score, confidence, products, tiers=None):
+        out=[]
+        for prod in products or []:
+            best=max_boxes_within_limit(available_limit,prod.get('unit_price',0),prod.get('units_per_box',1),tiers)
+            if best['boxes']>0:
+                out.append({'name':prod.get('name','Produto'),'boxes':best['boxes'],'units':best['units'],'unit_price':float(prod.get('unit_price',0)),'gross':best['gross'],'discount_rate':best['discount_rate'],'discount_value':best['discount_value'],'net':best['net'],'box_value':round(best['net']/best['boxes'],2),'used':best['net'],'remaining':round(float(available_limit)-best['net'],2)})
+        return out
 from research import research_company
 from config import PRODUCTS, PAYMENT_TERMS
 try:
@@ -17,7 +67,7 @@ APP=Path(__file__).parent
 store=Store(APP/'credit.db')
 init_users(APP/'credit.db')
 
-st.set_page_config(page_title='Fratelli B2B Crédito 6.4',page_icon='logo.png',layout='wide')
+st.set_page_config(page_title='B2B Crédito 6.5.1',page_icon='logo.png',layout='wide')
 
 st.markdown('''<style>
 .block-container{padding-top:1rem}.decision{padding:18px;border-radius:12px;border:1px solid #ddd;margin:10px 0}.muted{color:#6b7280}.danger{border-left:5px solid #b91c1c}.warn{border-left:5px solid #d97706}.ok{border-left:5px solid #15803d}
