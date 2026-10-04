@@ -23,37 +23,52 @@ st.markdown('''<style>
 def money(v): return f"R$ {float(v or 0):,.2f}".replace(',','X').replace('.',',').replace('X','.')
 
 def login_gate():
-    if st.session_state.get('authenticated'): return True
+    # A primeira tela/aba do sistema é sempre o acesso.
+    # Mesmo depois de autenticado, o usuário pode voltar a ela para conferir a sessão ou sair.
+    if st.session_state.get('authenticated'):
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.image(str(APP/'logo.png'), width=170)
+        st.title('Acesso ao Fratelli B2B Crédito')
+        st.success(f"Você está conectado como **{st.session_state.get('username','')}**.")
+        st.caption('Esta é a primeira aba de acesso do sistema. O login continua disponível a qualquer momento.')
+        if st.button('SAIR DA CONTA', type='primary', use_container_width=True):
+            st.session_state.clear(); st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+        return True
+
     st.markdown('<div class="login-card">',unsafe_allow_html=True)
-    if not has_users(APP/'credit.db'):
-        st.image(str(APP/'logo.png'),width=170)
-        st.title('Primeiro acesso')
-        st.caption('Crie o usuário administrador. Depois disso, todo acesso ao sistema exigirá login.')
-        u=st.text_input('Usuário',key='setup_u')
-        p=st.text_input('Senha',type='password',key='setup_p')
-        p2=st.text_input('Confirmar senha',type='password',key='setup_p2')
-        if st.button('CRIAR ACESSO',type='primary',use_container_width=True):
-            if p!=p2: st.error('As senhas não conferem.')
-            else:
-                ok,msg=create_user(APP/'credit.db',u,p)
-                if ok: st.success('Acesso criado. Faça login abaixo.'); st.rerun()
-                else: st.error(msg)
-    else:
-        st.image(str(APP/'logo.png'),width=170)
-        st.title('Fratelli B2B Crédito')
-        st.caption('Acesso restrito')
+    st.image(str(APP/'logo.png'),width=170)
+    st.title('Fratelli B2B Crédito')
+    st.caption('Acesso restrito')
+
+    # As três opções ficam sempre visíveis abaixo do acesso principal.
+    action = st.radio(
+        'Acesso',
+        ['Entrar', 'Esqueci minha senha', 'Primeiro acesso'],
+        horizontal=True,
+        label_visibility='collapsed',
+        key='login_action'
+    )
+
+    if action == 'Entrar':
         u=st.text_input('Usuário',key='login_u',placeholder='Ex.: administrador')
         p=st.text_input('Senha',type='password',key='login_p')
         if st.button('ENTRAR',type='primary',use_container_width=True):
             if verify_user(APP/'credit.db',u,p):
-                st.session_state.authenticated=True; st.session_state.username=' '.join(u.strip().lower().split()); st.rerun()
+                st.session_state.authenticated=True
+                st.session_state.username=' '.join(u.strip().lower().split())
+                st.rerun()
             else:
                 st.error('Usuário ou senha inválidos.')
                 st.caption('O usuário não diferencia maiúsculas/minúsculas e espaços no início/fim são ignorados.')
-        with st.expander('Esqueci a senha / recuperação local'):
-            st.warning('Use somente se você tiver acesso ao computador onde o sistema está instalado.')
+
+    elif action == 'Esqueci minha senha':
+        st.info('A recuperação é feita localmente neste computador e não apaga o histórico das análises.')
+        if not has_users(APP/'credit.db'):
+            st.warning('Ainda não existe nenhum usuário. Use “Primeiro acesso”.')
+        else:
             users=list_users(APP/'credit.db')
-            ru=st.selectbox('Usuário para redefinir',users,key='reset_user')
+            ru=st.selectbox('Usuário',users,key='reset_user')
             rp=st.text_input('Nova senha',type='password',key='reset_p1')
             rp2=st.text_input('Confirmar nova senha',type='password',key='reset_p2')
             confirm=st.checkbox('Confirmo que quero redefinir esta senha neste computador.',key='reset_confirm')
@@ -64,7 +79,27 @@ def login_gate():
                     st.error('As senhas não conferem.')
                 else:
                     ok,msg=reset_password(APP/'credit.db',ru,rp)
-                    st.success(msg) if ok else st.error(msg)
+                    if ok: st.success(msg)
+                    else: st.error(msg)
+
+    else:  # Primeiro acesso
+        if has_users(APP/'credit.db'):
+            st.warning('O primeiro acesso já foi realizado neste computador. Para criar novos usuários, entre com a conta administradora.')
+            st.caption('Se você precisa recuperar a senha existente, use “Esqueci minha senha”.')
+        else:
+            st.caption('Crie o primeiro usuário administrador. Depois disso, todo acesso ao sistema exigirá login.')
+            u=st.text_input('Novo usuário',key='setup_u')
+            p=st.text_input('Senha',type='password',key='setup_p')
+            p2=st.text_input('Confirmar senha',type='password',key='setup_p2')
+            if st.button('CRIAR PRIMEIRO ACESSO',type='primary',use_container_width=True):
+                if p!=p2: st.error('As senhas não conferem.')
+                else:
+                    ok,msg=create_user(APP/'credit.db',u,p)
+                    if ok:
+                        st.success('Acesso criado. Agora selecione “Entrar”.')
+                        st.info('Selecione “Entrar” acima para acessar o sistema.')
+                    else: st.error(msg)
+
     st.markdown('</div>',unsafe_allow_html=True)
     return False
 
@@ -75,7 +110,7 @@ with st.sidebar:
     st.caption(f"Usuário: **{st.session_state.get('username','')}**")
     if st.button('Sair',use_container_width=True):
         st.session_state.clear(); st.rerun()
-    menu=st.radio('Menu',['Nova análise','Simulação do pedido','Histórico','Carteira','Metodologia'])
+    menu=st.radio('Menu',['Login','Nova análise','Simulação do pedido','Histórico','Carteira','Metodologia'])
 
 def render_decision(result):
     o=result['order']; dec=o['decision']
@@ -85,7 +120,10 @@ def render_decision(result):
     a,b,c,d=st.columns(4); a.metric('Score',f'{result["score"]:.1f}/100'); b.metric('Confiança',f'{result["confidence"]:.1f}%'); c.metric('Limite',money(result['limit'])); d.metric('Disponível',money(result['available']))
     st.markdown(f'**Por que:** {o["reason"]}')
 
-if menu=='Nova análise':
+if menu=='Login':
+    login_gate()
+
+elif menu=='Nova análise':
     st.title('Nova análise de crédito')
     st.caption('Motor de 5 critérios: inclui tempo de atividade como fator independente. O histórico interno continua como ajuste comercial, não como penalização estrutural para empresas sem histórico.')
     cnpj=st.text_input('CNPJ',placeholder='00.000.000/0000-00')
