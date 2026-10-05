@@ -63,9 +63,13 @@ except ImportError:
 from storage import Store
 from auth import init_users, has_users, create_user, verify_user, list_users, list_user_records, reset_password, register_login, is_admin, deactivate_user
 
-APP=Path(__file__).parent
-store=Store(APP/'credit.db')
-init_users(APP/'credit.db')
+APP = Path(__file__).parent
+
+DB_PATH = APP / "credit.db"
+
+store = Store(DB_PATH)
+
+init_users(DB_PATH)
 
 st.set_page_config(page_title='B2B Crédito 6.5.2',page_icon='logo.png',layout='wide')
 
